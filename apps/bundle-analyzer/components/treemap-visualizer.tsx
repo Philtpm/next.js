@@ -8,6 +8,7 @@ import {
   computeTreemapLayoutFromAnalyze,
   type LayoutNode,
   type LayoutNodeInfo,
+  SizeMode,
 } from '@/lib/treemap-layout'
 import { SpecialModule } from '@/lib/types'
 import { formatBytes } from '@/lib/utils'
@@ -27,6 +28,7 @@ interface TreemapVisualizerProps {
   filterSource?: (sourceIndex: number) => boolean
   isModulePolyfillChunk?: (sourceIndex: number) => boolean
   isNoModulePolyfillChunk?: (sourceIndex: number) => boolean
+  sizeMode?: SizeMode
 }
 
 function getFileColor(node: {
@@ -427,16 +429,55 @@ function drawTreemap(
       ctx.stroke()
 
       const titleFontSize = Math.max(10, titleBarHeight * 0.5)
-      ctx.fillStyle = colors.text
-      ctx.font = `600 ${titleFontSize}px sans-serif`
-      ctx.textAlign = 'left'
+      const sizeFontSize = Math.max(9, titleFontSize - 2)
+      const sizeText = formatBytes(node.size)
+      const centerY = rect.y + titleBarHeight / 2
+      const gap = 6
+
       ctx.textBaseline = 'middle'
-      ctx.fillText(
-        name,
-        rect.x + 8,
-        rect.y + titleBarHeight / 2,
-        rect.width - 16
-      )
+
+      // Measure size text first to reserve space
+      ctx.font = `${sizeFontSize}px sans-serif`
+      const sizeWidth = ctx.measureText(sizeText).width
+
+      const nameX = rect.x + 8
+      const availableNameWidth = Math.max(0, rect.width - 16 - sizeWidth - gap)
+      let displayName = name
+      ctx.font = `600 ${titleFontSize}px sans-serif`
+
+      // Account for ellipses width when truncating
+      const ellipsisWidth = ctx.measureText('...').width
+      while (
+        displayName.length > 0 &&
+        ctx.measureText(displayName).width > availableNameWidth
+      ) {
+        displayName = displayName.slice(0, -1)
+      }
+      if (displayName !== name) {
+        // Ensure name + ellipses fits within available width
+        while (
+          displayName.length > 0 &&
+          ctx.measureText(displayName).width + ellipsisWidth >
+            availableNameWidth
+        ) {
+          displayName = displayName.slice(0, -1)
+        }
+        displayName = `${displayName}...`
+      }
+
+      ctx.fillStyle = colors.text
+      ctx.textAlign = 'left'
+      ctx.fillText(displayName, nameX, centerY, availableNameWidth)
+
+      const nameWidth = ctx.measureText(displayName).width
+      const sizeX = nameX + nameWidth + gap
+
+      // Only draw size text if it fits within bounds
+      if (sizeX + sizeWidth <= rect.x + rect.width - 8) {
+        ctx.font = `${sizeFontSize}px sans-serif`
+        ctx.fillStyle = colors.textMuted
+        ctx.fillText(sizeText, sizeX, centerY)
+      }
     }
 
     ctx.globalAlpha = 1.0
@@ -474,16 +515,54 @@ function drawTreemap(
       ctx.stroke()
 
       const titleFontSize = Math.max(10, titleBarHeight * 0.5)
-      ctx.fillStyle = colors.text
-      ctx.font = `600 ${titleFontSize}px sans-serif`
-      ctx.textAlign = 'left'
+      const sizeFontSize = Math.max(9, titleFontSize - 2)
+      const sizeText = formatBytes(node.size)
+      const centerY = rect.y + titleBarHeight / 2
+      const gap = 6
+
       ctx.textBaseline = 'middle'
-      ctx.fillText(
-        name,
-        rect.x + 8,
-        rect.y + titleBarHeight / 2,
-        rect.width - 16
-      )
+
+      ctx.font = `${sizeFontSize}px sans-serif`
+      const sizeWidth = ctx.measureText(sizeText).width
+
+      const nameX = rect.x + 8
+      const availableNameWidth = Math.max(0, rect.width - 16 - sizeWidth - gap)
+      let displayName = name
+      ctx.font = `600 ${titleFontSize}px sans-serif`
+
+      // Account for ellipses width when truncating
+      const ellipsisWidth = ctx.measureText('...').width
+      while (
+        displayName.length > 0 &&
+        ctx.measureText(displayName).width > availableNameWidth
+      ) {
+        displayName = displayName.slice(0, -1)
+      }
+      if (displayName !== name) {
+        // Ensure name + ellipses fits within available width
+        while (
+          displayName.length > 0 &&
+          ctx.measureText(displayName).width + ellipsisWidth >
+            availableNameWidth
+        ) {
+          displayName = displayName.slice(0, -1)
+        }
+        displayName = `${displayName}...`
+      }
+
+      ctx.fillStyle = colors.text
+      ctx.textAlign = 'left'
+      ctx.fillText(displayName, nameX, centerY, availableNameWidth)
+
+      const nameWidth = ctx.measureText(displayName).width
+      const sizeX = nameX + nameWidth + gap
+
+      // Only draw size text if it fits within bounds
+      if (sizeX + sizeWidth <= rect.x + rect.width - 8) {
+        ctx.font = `${sizeFontSize}px sans-serif`
+        ctx.fillStyle = colors.textMuted
+        ctx.fillText(sizeText, sizeX, centerY)
+      }
     }
 
     ctx.globalAlpha = 1.0
@@ -604,6 +683,7 @@ export function TreemapVisualizer({
   onHoveredNodeChangeDelayed,
   searchQuery = '',
   filterSource,
+  sizeMode = SizeMode.Compressed,
 }: TreemapVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -708,7 +788,8 @@ export function TreemapVisualizer({
         width: cssDimensions.width,
         height: cssDimensions.height,
       },
-      filterSource
+      filterSource,
+      sizeMode
     )
 
     // If we're not at the root, wrap with ancestor title bars
@@ -731,6 +812,7 @@ export function TreemapVisualizer({
     cssDimensions.width,
     cssDimensions.height,
     filterSource,
+    sizeMode,
   ])
 
   useEffect(() => {
@@ -917,16 +999,16 @@ function getThemeColors() {
   return {
     text: dark ? '#ffffff' : '#000000',
     textMuted: dark ? 'rgba(255, 255, 255, 0.6)' : 'rgba(0, 0, 0, 0.6)',
-    border: dark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(128, 128, 128, 0.2)',
-    dirBg: dark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(128, 128, 128, 0.1)',
-    dirBorder: dark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(128, 128, 128, 0.3)',
-    dirTitleBg: dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(128, 128, 128, 0.1)',
+    border: dark ? 'rgba(255, 255, 255, 0.4)' : 'rgba(180, 180, 180, 0.5)',
+    dirBg: dark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(230, 230, 230, 0.1)',
+    dirBorder: dark ? 'rgba(255, 255, 255, 0.5)' : 'rgba(180, 180, 180, 0.6)',
+    dirTitleBg: dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(230, 230, 230, 0.1)',
     dirTitleBorder: dark
-      ? 'rgba(255, 255, 255, 0.15)'
-      : 'rgba(128, 128, 128, 0.2)',
+      ? 'rgba(255, 255, 255, 0.4)'
+      : 'rgba(180, 180, 180, 0.5)',
     collapsedBg: dark
       ? 'rgba(128, 128, 128, 0.15)'
-      : 'rgba(128, 128, 128, 0.2)',
+      : 'rgba(230, 230, 230, 0.2)',
     collapsedText: dark
       ? 'rgba(255, 255, 255, 0.5)'
       : 'rgba(128, 128, 128, 0.6)',
