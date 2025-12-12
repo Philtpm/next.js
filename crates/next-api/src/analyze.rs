@@ -425,7 +425,7 @@ pub async fn analyze_module_graphs(module_graphs: Vc<ModuleGraphs>) -> Result<Vc
     for &module_graph in module_graphs.await? {
         let module_graph = module_graph.read_graphs().await?;
         module_graph.traverse_all_edges_unordered(|parent, node| {
-            if let Some((parent_node, reference)) = parent {
+            if let Some((parent_node, reference, _)) = parent {
                 all_modules.insert(parent_node);
                 all_modules.insert(node);
                 match reference.chunking_type {

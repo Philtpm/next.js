@@ -5,11 +5,14 @@ use auto_hash_map::AutoSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::Instrument;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{ResolvedVc, Vc};
+use turbo_tasks::{ReadRef, ResolvedVc, Vc};
 
 use crate::{
     module::Module,
-    module_graph::{GraphEdgeIndex, GraphTraversalAction, ModuleGraph},
+    module_graph::{
+        GraphEdgeIndex, GraphTraversalAction, ModuleGraph,
+        side_effect_module_info::compute_side_effect_free_module_info,
+    },
     reference::ModuleReference,
     resolve::{ExportUsage, ImportUsage},
 };
@@ -147,6 +150,7 @@ pub async fn compute_binding_usage_info(
                                 .iter()
                                 .all(|e| !source_used_exports.is_export_used(e))
                             {
+                                // all exports are unused
                                 #[cfg(debug_assertions)]
                                 debug_unused_references_name.insert((
                                     parent,
@@ -169,7 +173,7 @@ pub async fn compute_binding_usage_info(
                                 // Continue, add export
                             }
                         }
-                        ImportUsage::SideEffects => {
+                        ImportUsage::TopLevel => {
                             #[cfg(debug_assertions)]
                             debug_unused_references_name.remove(&(
                                 parent,
@@ -178,7 +182,6 @@ pub async fn compute_binding_usage_info(
                             ));
                             unused_references_edges.remove(&edge);
                             unused_references.remove(&ref_data.reference);
-                            // Continue, has to always be included
                         }
                     }
                 }
@@ -196,23 +199,56 @@ pub async fn compute_binding_usage_info(
             |_, _| Ok(0),
         )?;
 
+        // Second pass: Remove imports to side-effect-free modules from modules whose exports are
+        // not used
+        if remove_unused_imports {
+            let side_effect_free_modules = compute_side_effect_free_module_info(*graph).await?;
+            graph.traverse_all_edges_unordered(|parent, target| {
+                let Some((parent_module, ref_data, edge)) = parent else {
+                    // Entry edge, skip
+                    return Ok(());
+                };
+
+                // Check if parent module has only Evaluation usage (no exports used)
+                let only_evaluation = used_exports
+                    .get(&parent_module)
+                    .map(|usage| matches!(usage, ModuleExportUsageInfo::Evaluation))
+                    .unwrap_or(false);
+
+                if only_evaluation && side_effect_free_modules.contains(&target) {
+                    #[cfg(debug_assertions)]
+                    debug_unused_references_name.insert((
+                        parent_module,
+                        ref_data.binding_usage.export.clone(),
+                        target,
+                    ));
+                    unused_references_edges.insert(edge);
+                    unused_references.insert(ref_data.reference);
+                }
+
+                Ok(())
+            })?;
+        }
+
         // Compute cycles and select modules to be 'circuit breakers'
         // A circuit breaker module will need to eagerly export lazy getters for its exports to
         // break an evaluation cycle all other modules can export values after defining them
         let mut export_circuit_breakers = FxHashSet::default();
         graph.traverse_cycles(
-            |e| e.chunking_type.is_parallel(),
+            |e| e.chunking_type.is_parallel() && !unused_references.contains(&e.reference),
             |cycle| {
                 // To break cycles we need to ensure that no importing module can observe a
                 // partially populated exports object.
 
-                // We could compute this based on the module graph via a DFS from each entry point
-                // to the cycle.  Whatever node is hit first is an entry point to the cycle.
-                // (scope hoisting does something similar) and then we would only need to
-                // mark 'entry' modules (basically the targets of back edges in the export graph) as
-                // circuit breakers.  For now we just mark everything on the theory that cycles are
-                // rare.  For vercel-site on 8/22/2025 there were 106 cycles covering 800 modules
-                // (or 1.2% of all modules).  So with this analysis we could potentially drop 80% of
+                // We could compute this based on the module graph via a DFS from each entry
+                // point to the cycle.  Whatever node is hit first is an
+                // entry point to the cycle. (scope hoisting does something
+                // similar) and then we would only need to mark 'entry'
+                // modules (basically the targets of back edges in the export graph) as
+                // circuit breakers.  For now we just mark everything on the theory that cycles
+                // are rare.  For vercel-site on 8/22/2025 there were 106
+                // cycles covering 800 modules (or 1.2% of all modules).  So
+                // with this analysis we could potentially drop 80% of
                 // the cycle breaker modules.
                 export_circuit_breakers.extend(cycle.iter().map(|n| **n));
                 Ok(())

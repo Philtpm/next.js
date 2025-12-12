@@ -1269,21 +1269,56 @@ impl ModuleGraphRef {
     pub fn traverse_all_edges_unordered(
         &self,
         mut visitor: impl FnMut(
-            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData)>,
+            Option<(ResolvedVc<Box<dyn Module>>, &'_ RefData, GraphEdgeIndex)>,
             ResolvedVc<Box<dyn Module>>,
         ) -> Result<()>,
     ) -> Result<()> {
-        let entries = self.graphs.iter().flat_map(|g| g.entry_modules());
+        use std::collections::VecDeque;
 
-        self.traverse_edges_from_entries_dfs(
-            entries,
-            &mut (),
-            |parent, target, _| {
-                visitor(parent, target)?;
-                Ok(GraphTraversalAction::Continue)
-            },
-            |_, _, _| Ok(()),
-        )
+        let mut visited = FxHashSet::default();
+        let mut queue = VecDeque::new();
+
+        // Start with all entry modules
+        for g in &self.graphs {
+            for entry in g.entry_modules() {
+                visitor(None, entry)?;
+                let entry_idx = self.get_entry(entry)?;
+                if visited.insert(entry_idx) {
+                    queue.push_back(entry_idx);
+                }
+            }
+        }
+
+        // BFS traversal to visit all reachable edges
+        while let Some(node_idx) = queue.pop_front() {
+            let node = self.get_node(node_idx)?;
+
+            // Get the actual node to traverse from (handles VisitedModule nodes)
+            let traverse_from = if self.should_visit_node(node, Direction::Outgoing) {
+                node.target_idx(Direction::Outgoing).unwrap_or(node_idx)
+            } else {
+                continue;
+            };
+
+            // Visit all outgoing edges (iter_graphs_neighbors_rev already filters unused edges)
+            for (edge_index, child_idx) in
+                self.iter_graphs_neighbors_rev(traverse_from, Direction::Outgoing)
+            {
+                let edge = self.get_edge(edge_index)?;
+                let parent = node.module();
+                let child_node = self.get_node(child_idx)?;
+                let child = child_node.module();
+
+                visitor(Some((parent, edge, edge_index)), child)?;
+
+                // Add child to queue if not yet visited
+                if visited.insert(child_idx) {
+                    queue.push_back(child_idx);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Traverses all reachable edges in dfs order. The preorder visitor can be used to
