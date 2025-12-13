@@ -5,7 +5,7 @@ use auto_hash_map::AutoSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::Instrument;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{ReadRef, ResolvedVc, Vc};
+use turbo_tasks::{ResolvedVc, Vc};
 
 use crate::{
     module::Module,
@@ -125,11 +125,11 @@ pub async fn compute_binding_usage_info(
             );
         }
 
-        let graph = graph.read_graphs().await?;
+        let graph_ref = graph.read_graphs().await?;
 
-        let entries = graph.graphs.iter().flat_map(|g| g.entry_modules());
+        let entries = graph_ref.graphs.iter().flat_map(|g| g.entry_modules());
 
-        let visit_count = graph.traverse_edges_fixed_point_with_priority(
+        let visit_count = graph_ref.traverse_edges_fixed_point_with_priority(
             entries.map(|m| (m, 0)),
             &mut (),
             |parent, target, _| {
@@ -203,7 +203,7 @@ pub async fn compute_binding_usage_info(
         // not used
         if remove_unused_imports {
             let side_effect_free_modules = compute_side_effect_free_module_info(*graph).await?;
-            graph.traverse_all_edges_unordered(|parent, target| {
+            graph_ref.traverse_all_edges_unordered(|parent, target| {
                 let Some((parent_module, ref_data, edge)) = parent else {
                     // Entry edge, skip
                     return Ok(());
@@ -234,7 +234,7 @@ pub async fn compute_binding_usage_info(
         // A circuit breaker module will need to eagerly export lazy getters for its exports to
         // break an evaluation cycle all other modules can export values after defining them
         let mut export_circuit_breakers = FxHashSet::default();
-        graph.traverse_cycles(
+        graph_ref.traverse_cycles(
             |e| e.chunking_type.is_parallel() && !unused_references.contains(&e.reference),
             |cycle| {
                 // To break cycles we need to ensure that no importing module can observe a
