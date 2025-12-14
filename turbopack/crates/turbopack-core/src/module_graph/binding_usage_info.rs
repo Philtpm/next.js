@@ -199,23 +199,30 @@ pub async fn compute_binding_usage_info(
             |_, _| Ok(0),
         )?;
 
-        // Second pass: Remove imports to side-effect-free modules from modules whose exports are
-        // not used
+        // Second pass: Remove side-effect-only imports to side-effect-free modules
         if remove_unused_imports {
+            use turbo_tasks::TryJoinIterExt;
             let side_effect_free_modules = compute_side_effect_free_module_info(*graph).await?;
+            eprintln!(
+                "removing side effects imports on side effect free modules:\n{:#?}",
+                side_effect_free_modules
+                    .iter()
+                    .map(|m| m.ident_string())
+                    .try_join()
+                    .await?
+            );
             graph_ref.traverse_all_edges_unordered(|parent, target| {
                 let Some((parent_module, ref_data, edge)) = parent else {
                     // Entry edge, skip
                     return Ok(());
                 };
 
-                // Check if parent module has only Evaluation usage (no exports used)
-                let only_evaluation = used_exports
-                    .get(&parent_module)
-                    .map(|usage| matches!(usage, ModuleExportUsageInfo::Evaluation))
-                    .unwrap_or(false);
+                // Check if this specific edge is only being used for side effects
+                // (i.e., no exports are being imported from the target)
+                let edge_is_side_effect_only =
+                    matches!(&ref_data.binding_usage.export, ExportUsage::Evaluation);
 
-                if only_evaluation && side_effect_free_modules.contains(&target) {
+                if edge_is_side_effect_only && side_effect_free_modules.contains(&target) {
                     #[cfg(debug_assertions)]
                     debug_unused_references_name.insert((
                         parent_module,
@@ -235,6 +242,7 @@ pub async fn compute_binding_usage_info(
         // break an evaluation cycle all other modules can export values after defining them
         let mut export_circuit_breakers = FxHashSet::default();
         graph_ref.traverse_cycles(
+            // No need to traverse edges that are unused.
             |e| e.chunking_type.is_parallel() && !unused_references.contains(&e.reference),
             |cycle| {
                 // To break cycles we need to ensure that no importing module can observe a
